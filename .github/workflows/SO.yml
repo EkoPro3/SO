@@ -33,7 +33,13 @@ jobs:
     # 4. تثبيت أدوات ELF للاستخراج المباشر
     - name: Install ELF Analysis Tools
       run: |
-        sudo apt-get install -y binutils readelf nm file xxd
+        # binutils يحتوي على readelf و nm و objdump بالفعل على ubuntu-latest
+        # نثبت فقط ما قد يكون ناقصاً
+        sudo apt-get install -y file xxd 2>/dev/null || true
+        # تأكيد وجود الأدوات
+        which readelf && readelf --version | head -1
+        which nm && nm --version | head -1
+        which strings && strings --version | head -1 || true
 
     # 5. السكريبت الرئيسي الشامل
     - name: Create Deep Extraction Script
