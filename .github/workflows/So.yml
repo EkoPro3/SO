@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - '**.so'
-  workflow_dispatch: # تفعيل الزر اليدوي بشكل رسمي وثابت
+  workflow_dispatch:
 
 jobs:
   decompile:
@@ -64,9 +64,9 @@ public class DeepExtractor extends GhidraScript {
         FunctionManager fm = currentProgram.getFunctionManager();
         Memory memory = currentProgram.getMemory();
 
-        // ── FILE 1: EXPORTS ──────────────────────────────────────
+        // 1: EXPORTS
         PrintWriter w = new PrintWriter(new FileWriter(outDir + "/exports.txt"));
-        w.println("// EXPORTED SYMBOLS — " + libName + "\n");
+        w.println("// EXPORTED SYMBOLS - " + libName + "\n");
         for (Symbol sym : symTable.getAllSymbols(true)) {
             if (sym.isExternalEntryPoint()) {
                 w.println("[EXPORT] " + sym.getName() + " @ " + sym.getAddress());
@@ -74,9 +74,9 @@ public class DeepExtractor extends GhidraScript {
         }
         w.close();
 
-        // ── FILE 2: IMPORTS ──────────────────────────────────────
+        // 2: IMPORTS
         w = new PrintWriter(new FileWriter(outDir + "/imports.txt"));
-        w.println("// IMPORTED SYMBOLS — " + libName + "\n");
+        w.println("// IMPORTED SYMBOLS - " + libName + "\n");
         ExternalManager extMgr = currentProgram.getExternalManager();
         for (String lib : extMgr.getExternalLibraryNames()) {
             w.println("[LIB] " + lib);
@@ -88,9 +88,9 @@ public class DeepExtractor extends GhidraScript {
         }
         w.close();
 
-        // ── FILE 3: STRINGS ──────────────────────────────────────
+        // 3: STRINGS
         w = new PrintWriter(new FileWriter(outDir + "/strings.txt"));
-        w.println("// DEFINED STRINGS — " + libName + "\n");
+        w.println("// DEFINED STRINGS - " + libName + "\n");
         DataIterator di = currentProgram.getListing().getDefinedData(true);
         while (di.hasNext()) {
             Data d = di.next();
@@ -105,9 +105,9 @@ public class DeepExtractor extends GhidraScript {
         }
         w.close();
 
-        // ── FILE 4: MEMORY MAP ───────────────────────────────────
+        // 4: MEMORY MAP
         w = new PrintWriter(new FileWriter(outDir + "/sections.txt"));
-        w.println("// MEMORY SECTIONS — " + libName + "\n");
+        w.println("// MEMORY SECTIONS - " + libName + "\n");
         for (MemoryBlock b : memory.getBlocks()) {
             w.println("[" + b.getName() + "]"
                 + " start=0x" + b.getStart()
@@ -119,9 +119,9 @@ public class DeepExtractor extends GhidraScript {
         }
         w.close();
 
-        // ── FILE 5: CALL GRAPH ───────────────────────────────────
+        // 5: CALL GRAPH
         w = new PrintWriter(new FileWriter(outDir + "/call_graph.txt"));
-        w.println("// CALL GRAPH — " + libName + "\n");
+        w.println("// CALL GRAPH - " + libName + "\n");
         FunctionIterator fi = fm.getFunctions(true);
         while (fi.hasNext()) {
             Function f = fi.next();
@@ -135,9 +135,9 @@ public class DeepExtractor extends GhidraScript {
         }
         w.close();
 
-        // ── FILE 6: FUNCTION INDEX ───────────────────────────────
+        // 6: FUNCTION INDEX
         w = new PrintWriter(new FileWriter(outDir + "/index.txt"));
-        w.println("// FUNCTION INDEX — " + libName + "\n");
+        w.println("// FUNCTION INDEX - " + libName + "\n");
         fi = fm.getFunctions(true);
         int idx = 1;
         while (fi.hasNext()) {
@@ -150,7 +150,7 @@ public class DeepExtractor extends GhidraScript {
         }
         w.close();
 
-        // ── FILE 7: FULL DECOMPILED SOURCE ───────────────────────
+        // 7: FULL DECOMPILED SOURCE
         DecompInterface decoIf = new DecompInterface();
         DecompileOptions opts = new DecompileOptions();
         opts.setMaxInstructions(99999);
@@ -160,7 +160,7 @@ public class DeepExtractor extends GhidraScript {
         decoIf.setSimplificationStyle("decompile");
 
         w = new PrintWriter(new FileWriter(outDir + "/source.c"));
-        w.println("// FULL DECOMPILED SOURCE — " + libName);
+        w.println("// FULL DECOMPILED SOURCE - " + libName);
         w.println("// Ghidra 11.0.3 | DeepExtractor\n");
 
         int total = 0, ok = 0, thunks = 0, failed = 0;
@@ -190,7 +190,7 @@ public class DeepExtractor extends GhidraScript {
                 failed++;
             }
         }
-        w.println("// DONE — total=" + total + " ok=" + ok + " thunks=" + thunks + " failed=" + failed);
+        w.println("// DONE - total=" + total + " ok=" + ok + " thunks=" + thunks + " failed=" + failed);
         w.close();
         decoIf.dispose();
         println("DeepExtractor DONE: " + libName);
@@ -205,8 +205,6 @@ PYEOF
     - name: Deep Decompile All SO Files
       run: |
         mkdir -p App_Source_Code
-        
-        # البحث عن كافة الملفات التي تنتهي بـ .so بدون مشاكل في المسارات المقيدة
         find . -type f -name "*.so" -not -path "*/ghidra/*" | while read -r file; do
           [ -f "$file" ] || continue
 
