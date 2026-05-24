@@ -1,0 +1,258 @@
+name: Deep Decompile .SO Files
+
+on:
+  push:
+    paths:
+      - '**.so'
+  workflow_dispatch:
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Download and Install Ghidra
+      run: |
+        wget -q https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.0.3_build/ghidra_11.0.3_PUBLIC_20240410.zip -O ghidra.zip
+        unzip -q ghidra.zip
+        mv ghidra_11.0.3_PUBLIC ghidra
+        chmod +x ghidra/support/analyzeHeadless
+
+    - name: Install ELF Analysis Tools
+      run: |
+        sudo apt-get install -y file xxd 2>/dev/null || true
+        which readelf && readelf --version | head -1
+        which nm && nm --version | head -1
+
+    # كتابة السكريبت عبر python3 لتجنب مشكلة indentation في heredoc
+    - name: Create Deep Extraction Script
+      run: |
+        mkdir -p ghidra/Ghidra/Features/Base/ghidra_scripts
+        python3 << 'PYEOF'
+script = r'''
+import ghidra.app.script.GhidraScript;
+import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileOptions;
+import ghidra.app.decompiler.DecompileResults;
+import ghidra.program.model.listing.*;
+import ghidra.program.model.symbol.*;
+import ghidra.program.model.data.*;
+import ghidra.program.model.address.*;
+import ghidra.program.model.mem.*;
+import java.io.*;
+import java.util.*;
+
+public class DeepExtractor extends GhidraScript {
+
+    @Override
+    public void run() throws Exception {
+        String[] args = getScriptArgs();
+        if (args.length == 0) return;
+        String outDir = args[0];
+        new File(outDir).mkdirs();
+
+        String libName = currentProgram.getName();
+        SymbolTable symTable = currentProgram.getSymbolTable();
+        FunctionManager fm = currentProgram.getFunctionManager();
+        Memory memory = currentProgram.getMemory();
+
+        // ── FILE 1: EXPORTS ──────────────────────────────────────
+        PrintWriter w = new PrintWriter(new FileWriter(outDir + "/exports.txt"));
+        w.println("// EXPORTED SYMBOLS — " + libName + "\n");
+        for (Symbol sym : symTable.getAllSymbols(true)) {
+            if (sym.isExternalEntryPoint()) {
+                w.println("[EXPORT] " + sym.getName() + " @ " + sym.getAddress());
+            }
+        }
+        w.close();
+
+        // ── FILE 2: IMPORTS ──────────────────────────────────────
+        w = new PrintWriter(new FileWriter(outDir + "/imports.txt"));
+        w.println("// IMPORTED SYMBOLS — " + libName + "\n");
+        ExternalManager extMgr = currentProgram.getExternalManager();
+        for (String lib : extMgr.getExternalLibraryNames()) {
+            w.println("[LIB] " + lib);
+            ExternalLocationIterator it = extMgr.getExternalLocations(lib);
+            while (it.hasNext()) {
+                ExternalLocation loc = it.next();
+                w.println("    -> " + loc.getLabel());
+            }
+        }
+        w.close();
+
+        // ── FILE 3: STRINGS ──────────────────────────────────────
+        w = new PrintWriter(new FileWriter(outDir + "/strings.txt"));
+        w.println("// DEFINED STRINGS — " + libName + "\n");
+        DataIterator di = currentProgram.getListing().getDefinedData(true);
+        while (di.hasNext()) {
+            Data d = di.next();
+            DataType dt = d.getDataType();
+            String dtName = dt.getName().toLowerCase();
+            if (dtName.contains("string") || dtName.contains("unicode")) {
+                Object val = d.getValue();
+                if (val != null && val.toString().length() > 2) {
+                    w.println("[0x" + d.getAddress() + "] \"" + val.toString() + "\"");
+                }
+            }
+        }
+        w.close();
+
+        // ── FILE 4: MEMORY MAP ───────────────────────────────────
+        w = new PrintWriter(new FileWriter(outDir + "/sections.txt"));
+        w.println("// MEMORY SECTIONS — " + libName + "\n");
+        for (MemoryBlock b : memory.getBlocks()) {
+            w.println("[" + b.getName() + "]"
+                + " start=0x" + b.getStart()
+                + " end=0x" + b.getEnd()
+                + " size=" + b.getSize()
+                + " R=" + b.isRead()
+                + " W=" + b.isWrite()
+                + " X=" + b.isExecute());
+        }
+        w.close();
+
+        // ── FILE 5: CALL GRAPH ───────────────────────────────────
+        w = new PrintWriter(new FileWriter(outDir + "/call_graph.txt"));
+        w.println("// CALL GRAPH — " + libName + "\n");
+        FunctionIterator fi = fm.getFunctions(true);
+        while (fi.hasNext()) {
+            Function f = fi.next();
+            Set<Function> calls = f.getCalledFunctions(monitor);
+            if (!calls.isEmpty()) {
+                w.println(f.getName() + " @ 0x" + f.getEntryPoint() + " calls:");
+                for (Function c : calls) {
+                    w.println("    -> " + c.getName());
+                }
+            }
+        }
+        w.close();
+
+        // ── FILE 6: FUNCTION INDEX ───────────────────────────────
+        w = new PrintWriter(new FileWriter(outDir + "/index.txt"));
+        w.println("// FUNCTION INDEX — " + libName + "\n");
+        fi = fm.getFunctions(true);
+        int idx = 1;
+        while (fi.hasNext()) {
+            Function f = fi.next();
+            String flags = f.isThunk() ? "[THUNK]" : "";
+            flags += f.getName().startsWith("Java_") ? "[JNI]" : "";
+            flags += f.isInline() ? "[INLINE]" : "";
+            w.printf("%4d | 0x%-12s | %-14s | %s%n",
+                idx++, f.getEntryPoint(), flags, f.getName());
+        }
+        w.close();
+
+        // ── FILE 7: FULL DECOMPILED SOURCE ───────────────────────
+        DecompInterface decoIf = new DecompInterface();
+        DecompileOptions opts = new DecompileOptions();
+        opts.setMaxInstructions(99999);
+        opts.setDefaultTimeout(120);
+        decoIf.setOptions(opts);
+        decoIf.openProgram(currentProgram);
+        decoIf.setSimplificationStyle("decompile");
+
+        w = new PrintWriter(new FileWriter(outDir + "/source.c"));
+        w.println("// FULL DECOMPILED SOURCE — " + libName);
+        w.println("// Ghidra 11.0.3 | DeepExtractor\n");
+
+        int total = 0, ok = 0, thunks = 0, failed = 0;
+        fi = fm.getFunctions(true);
+        while (fi.hasNext() && !monitor.isCancelled()) {
+            Function f = fi.next();
+            total++;
+            if (f.isThunk()) {
+                thunks++;
+                Function tgt = f.getThunkedFunction(true);
+                w.println("// [THUNK] " + f.getName()
+                    + " -> " + (tgt != null ? tgt.getName() : "unknown")
+                    + " @ 0x" + f.getEntryPoint());
+                w.println("// " + "=".repeat(50) + "\n");
+                continue;
+            }
+            DecompileResults res = decoIf.decompileFunction(f, 120, monitor);
+            if (res != null && res.getDecompiledFunction() != null) {
+                String jniFlag = f.getName().startsWith("Java_") ? " [JNI]" : "";
+                w.println("// " + f.getName()
+                    + jniFlag
+                    + " | 0x" + f.getEntryPoint()
+                    + " | " + f.getBody().getNumAddresses() + " bytes");
+                w.println(res.getDecompiledFunction().getC());
+                w.println("// " + "=".repeat(50) + "\n");
+                ok++;
+            } else {
+                w.println("// [FAILED] " + f.getName() + " @ 0x" + f.getEntryPoint());
+                if (res != null && res.getErrorMessage() != null)
+                    w.println("// ERR: " + res.getErrorMessage());
+                w.println("// " + "=".repeat(50) + "\n");
+                failed++;
+            }
+        }
+        w.println("// DONE — total=" + total + " ok=" + ok
+            + " thunks=" + thunks + " failed=" + failed);
+        w.close();
+        decoIf.dispose();
+        println("DeepExtractor DONE: " + libName);
+    }
+}
+'''
+with open("ghidra/Ghidra/Features/Base/ghidra_scripts/DeepExtractor.java", "w") as f:
+    f.write(script.strip())
+print("Script written OK")
+PYEOF
+
+    - name: Deep Decompile All .SO Files
+      run: |
+        mkdir -p App_Source_Code
+        shopt -s nullglob
+
+        for file in *.so app/src/main/jniLibs/**/*.so app/src/lib/**/*.so; do
+          [ -f "$file" ] || continue
+
+          filename=$(basename -- "$file")
+          name="${filename%.*}"
+          arch=$(basename $(dirname "$file"))
+
+          if [[ "$arch" == *"arm64"* || "$arch" == *"x86"* || "$arch" == *"armeabi"* ]]; then
+            outdir="App_Source_Code/${name}/${arch}"
+          else
+            outdir="App_Source_Code/${name}"
+          fi
+          mkdir -p "$outdir"
+
+          echo "===== Processing: $filename ($arch) ====="
+
+          readelf -Ws  "$file" > "$outdir/readelf_symbols.txt"  2>/dev/null || true
+          readelf -S   "$file" > "$outdir/readelf_sections.txt" 2>/dev/null || true
+          readelf -d   "$file" > "$outdir/readelf_dynamic.txt"  2>/dev/null || true
+          nm -D --defined-only   "$file" > "$outdir/nm_exports.txt" 2>/dev/null || true
+          nm -D --undefined-only "$file" > "$outdir/nm_imports.txt" 2>/dev/null || true
+          strings -n 5 "$file"   > "$outdir/strings_raw.txt"   2>/dev/null || true
+          file "$file"           > "$outdir/file_info.txt"      2>/dev/null || true
+
+          ./ghidra/support/analyzeHeadless . "Proj_${name}" \
+            -import "$file" \
+            -analysisTimeoutPerFile 600 \
+            -scriptPath ./ghidra/Ghidra/Features/Base/ghidra_scripts \
+            -postScript DeepExtractor.java "$outdir" \
+            -deleteProject \
+            -log "$outdir/ghidra_log.txt" \
+            2>&1 | tail -30 || true
+
+          echo "Done: $filename -> $outdir"
+        done
+
+    - name: Upload All Extracted Data
+      uses: actions/upload-artifact@v4
+      with:
+        name: Deep-Extracted-Source
+        path: App_Source_Code/
+        retention-days: 30
