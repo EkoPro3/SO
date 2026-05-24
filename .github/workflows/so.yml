@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - '**.so'
-  workflow_dispatch:
+  workflow_dispatch: # هذا السطر مسؤول عن إظهار زر التشغيل اليدوي (Run workflow)
 
 jobs:
   decompile:
@@ -29,7 +29,7 @@ jobs:
 
     - name: Install ELF Analysis Tools
       run: |
-        sudo apt-get install -y file xxd 2>/dev/null || true
+        sudo apt-get update && sudo apt-get install -y file xxd binutils 2>/dev/null || true
         which readelf && readelf --version | head -1
         which nm && nm --version | head -1
 
@@ -212,16 +212,16 @@ PYEOF
     - name: Deep Decompile All .SO Files
       run: |
         mkdir -p App_Source_Code
-        shopt -s nullglob
-
-        for file in *.so app/src/main/jniLibs/**/*.so app/src/lib/**/*.so; do
+        
+        # استخدام أمر find للبحث عن أي ملف .so في جميع المجلدات لتفادي مشاكل عدم مطابقة المسارات الثابتة
+        find . -type f -name "*.so" -not -path "*/ghidra/*" | while read -r file; do
           [ -f "$file" ] || continue
 
           filename=$(basename -- "$file")
           name="${filename%.*}"
           arch=$(basename $(dirname "$file"))
 
-          if [[ "$arch" == *"arm64"* || "$arch" == *"x86"* || "$arch" == *"armeabi"* ]]; then
+          if [[ "$arch" == *"arm64"* || "$arch" == *"x86"* || "$arch" == *"armeabi"* || "$arch" == *"v7a"* ]]; then
             outdir="App_Source_Code/${name}/${arch}"
           else
             outdir="App_Source_Code/${name}"
