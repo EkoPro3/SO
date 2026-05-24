@@ -1,10 +1,10 @@
-name: Deep Decompile .SO Files
+name: Deep Decompile SO Files
 
 on:
   push:
     paths:
       - '**.so'
-  workflow_dispatch: # هذا السطر مسؤول عن إظهار زر التشغيل اليدوي (Run workflow)
+  workflow_dispatch: # تفعيل الزر اليدوي بشكل رسمي وثابت
 
 jobs:
   decompile:
@@ -33,7 +33,6 @@ jobs:
         which readelf && readelf --version | head -1
         which nm && nm --version | head -1
 
-    # كتابة السكريبت عبر python3 لتجنب مشكلة indentation في heredoc
     - name: Create Deep Extraction Script
       run: |
         mkdir -p ghidra/Ghidra/Features/Base/ghidra_scripts
@@ -172,32 +171,26 @@ public class DeepExtractor extends GhidraScript {
             if (f.isThunk()) {
                 thunks++;
                 Function tgt = f.getThunkedFunction(true);
-                w.println("// [THUNK] " + f.getName()
-                    + " -> " + (tgt != null ? tgt.getName() : "unknown")
-                    + " @ 0x" + f.getEntryPoint());
-                w.println("// " + "=".repeat(50) + "\n");
+                w.println("// [THUNK] " + f.getName() + " -> " + (tgt != null ? tgt.getName() : "unknown") + " @ " + f.getEntryPoint());
+                w.println("// ==================================================\n");
                 continue;
             }
             DecompileResults res = decoIf.decompileFunction(f, 120, monitor);
             if (res != null && res.getDecompiledFunction() != null) {
                 String jniFlag = f.getName().startsWith("Java_") ? " [JNI]" : "";
-                w.println("// " + f.getName()
-                    + jniFlag
-                    + " | 0x" + f.getEntryPoint()
-                    + " | " + f.getBody().getNumAddresses() + " bytes");
+                w.println("// " + f.getName() + jniFlag + " | 0x" + f.getEntryPoint() + " | " + f.getBody().getNumAddresses() + " bytes");
                 w.println(res.getDecompiledFunction().getC());
-                w.println("// " + "=".repeat(50) + "\n");
+                w.println("// ==================================================\n");
                 ok++;
             } else {
-                w.println("// [FAILED] " + f.getName() + " @ 0x" + f.getEntryPoint());
+                w.println("// [FAILED] " + f.getName() + " @ " + f.getEntryPoint());
                 if (res != null && res.getErrorMessage() != null)
                     w.println("// ERR: " + res.getErrorMessage());
-                w.println("// " + "=".repeat(50) + "\n");
+                w.println("// ==================================================\n");
                 failed++;
             }
         }
-        w.println("// DONE — total=" + total + " ok=" + ok
-            + " thunks=" + thunks + " failed=" + failed);
+        w.println("// DONE — total=" + total + " ok=" + ok + " thunks=" + thunks + " failed=" + failed);
         w.close();
         decoIf.dispose();
         println("DeepExtractor DONE: " + libName);
@@ -209,11 +202,11 @@ with open("ghidra/Ghidra/Features/Base/ghidra_scripts/DeepExtractor.java", "w") 
 print("Script written OK")
 PYEOF
 
-    - name: Deep Decompile All .SO Files
+    - name: Deep Decompile All SO Files
       run: |
         mkdir -p App_Source_Code
         
-        # استخدام أمر find للبحث عن أي ملف .so في جميع المجلدات لتفادي مشاكل عدم مطابقة المسارات الثابتة
+        # البحث عن كافة الملفات التي تنتهي بـ .so بدون مشاكل في المسارات المقيدة
         find . -type f -name "*.so" -not -path "*/ghidra/*" | while read -r file; do
           [ -f "$file" ] || continue
 
