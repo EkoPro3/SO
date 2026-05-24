@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - '**.so'
-  workflow_dispatch:
+  workflow_dispatch: # هذا السطر هو المسؤول عن إظهار زر التشغيل اليدوي
 
 jobs:
   decompile:
@@ -37,170 +37,171 @@ jobs:
       run: |
         mkdir -p ghidra/Ghidra/Features/Base/ghidra_scripts
         cat > ghidra/Ghidra/Features/Base/ghidra_scripts/DeepExtractor.java << 'JAVAEOF'
-import ghidra.app.script.GhidraScript;
-import ghidra.app.decompiler.DecompInterface;
-import ghidra.app.decompiler.DecompileOptions;
-import ghidra.app.decompiler.DecompileResults;
-import ghidra.program.model.listing.*;
-import ghidra.program.model.symbol.*;
-import ghidra.program.model.data.*;
-import ghidra.program.model.address.*;
-import ghidra.program.model.mem.*;
-import java.io.*;
-import java.util.*;
+        import ghidra.app.script.GhidraScript;
+        import ghidra.app.decompiler.DecompInterface;
+        import ghidra.app.decompiler.DecompileOptions;
+        import ghidra.app.decompiler.DecompileResults;
+        import ghidra.program.model.listing.*;
+        import ghidra.program.model.symbol.*;
+        import ghidra.program.model.data.*;
+        import ghidra.program.model.address.*;
+        import ghidra.program.model.mem.*;
+        import java.io.*;
+        import java.util.*;
 
-public class DeepExtractor extends GhidraScript {
+        public class DeepExtractor extends GhidraScript {
 
-    @Override
-    public void run() throws Exception {
-        String[] args = getScriptArgs();
-        if (args.length == 0) return;
-        String outDir = args[0];
-        new File(outDir).mkdirs();
+            @Override
+            public void run() throws Exception {
+                String[] args = getScriptArgs();
+                if (args.length == 0) return;
+                String outDir = args[0];
+                new File(outDir).mkdirs();
 
-        String libName = currentProgram.getName();
-        SymbolTable symTable = currentProgram.getSymbolTable();
-        FunctionManager fm = currentProgram.getFunctionManager();
-        Memory memory = currentProgram.getMemory();
+                String libName = currentProgram.getName();
+                SymbolTable symTable = currentProgram.getSymbolTable();
+                FunctionManager fm = currentProgram.getFunctionManager();
+                Memory memory = currentProgram.getMemory();
 
-        // 1: EXPORTS
-        PrintWriter w = new PrintWriter(new FileWriter(outDir + "/exports.txt"));
-        w.println("// EXPORTED SYMBOLS - " + libName + "\n");
-        for (Symbol sym : symTable.getAllSymbols(true)) {
-            if (sym.isExternalEntryPoint()) {
-                w.println("[EXPORT] " + sym.getName() + " @ " + sym.getAddress());
-            }
-        }
-        w.close();
-
-        // 2: IMPORTS
-        w = new PrintWriter(new FileWriter(outDir + "/imports.txt"));
-        w.println("// IMPORTED SYMBOLS - " + libName + "\n");
-        ExternalManager extMgr = currentProgram.getExternalManager();
-        for (String lib : extMgr.getExternalLibraryNames()) {
-            w.println("[LIB] " + lib);
-            ExternalLocationIterator it = extMgr.getExternalLocations(lib);
-            while (it.hasNext()) {
-                ExternalLocation loc = it.next();
-                w.println("    -> " + loc.getLabel());
-            }
-        }
-        w.close();
-
-        // 3: STRINGS
-        w = new PrintWriter(new FileWriter(outDir + "/strings.txt"));
-        w.println("// DEFINED STRINGS - " + libName + "\n");
-        DataIterator di = currentProgram.getListing().getDefinedData(true);
-        while (di.hasNext()) {
-            Data d = di.next();
-            DataType dt = d.getDataType();
-            String dtName = dt.getName().toLowerCase();
-            if (dtName.contains("string") || dtName.contains("unicode")) {
-                Object val = d.getValue();
-                if (val != null && val.toString().length() > 2) {
-                    w.println("[0x" + d.getAddress() + "] \"" + val.toString() + "\"");
+                // 1: EXPORTS
+                PrintWriter w = new PrintWriter(new FileWriter(outDir + "/exports.txt"));
+                w.println("// EXPORTED SYMBOLS - " + libName + "\n");
+                for (Symbol sym : symTable.getAllSymbols(true)) {
+                    if (sym.isExternalEntryPoint()) {
+                        w.println("[EXPORT] " + sym.getName() + " @ " + sym.getAddress());
+                    }
                 }
-            }
-        }
-        w.close();
+                w.close();
 
-        // 4: MEMORY MAP
-        w = new PrintWriter(new FileWriter(outDir + "/sections.txt"));
-        w.println("// MEMORY SECTIONS - " + libName + "\n");
-        for (MemoryBlock b : memory.getBlocks()) {
-            w.println("[" + b.getName() + "]"
-                + " start=0x" + b.getStart()
-                + " end=0x" + b.getEnd()
-                + " size=" + b.getSize()
-                + " R=" + b.isRead()
-                + " W=" + b.isWrite()
-                + " X=" + b.isExecute());
-        }
-        w.close();
-
-        // 5: CALL GRAPH
-        w = new PrintWriter(new FileWriter(outDir + "/call_graph.txt"));
-        w.println("// CALL GRAPH - " + libName + "\n");
-        FunctionIterator fi = fm.getFunctions(true);
-        while (fi.hasNext()) {
-            Function f = fi.next();
-            Set<Function> calls = f.getCalledFunctions(monitor);
-            if (!calls.isEmpty()) {
-                w.println(f.getName() + " @ 0x" + f.getEntryPoint() + " calls:");
-                for (Function c : calls) {
-                    w.println("    -> " + c.getName());
+                // 2: IMPORTS
+                w = new PrintWriter(new FileWriter(outDir + "/imports.txt"));
+                w.println("// IMPORTED SYMBOLS - " + libName + "\n");
+                ExternalManager extMgr = currentProgram.getExternalManager();
+                for (String lib : extMgr.getExternalLibraryNames()) {
+                    w.println("[LIB] " + lib);
+                    ExternalLocationIterator it = extMgr.getExternalLocations(lib);
+                    while (it.hasNext()) {
+                        ExternalLocation loc = it.next();
+                        w.println("    -> " + loc.getLabel());
+                    }
                 }
+                w.close();
+
+                // 3: STRINGS
+                w = new PrintWriter(new FileWriter(outDir + "/strings.txt"));
+                w.println("// DEFINED STRINGS - " + libName + "\n");
+                DataIterator di = currentProgram.getListing().getDefinedData(true);
+                while (di.hasNext()) {
+                    Data d = di.next();
+                    DataType dt = d.getDataType();
+                    String dtName = dt.getName().toLowerCase();
+                    if (dtName.contains("string") || dtName.contains("unicode")) {
+                        Object val = d.getValue();
+                        if (val != null && val.toString().length() > 2) {
+                            w.println("[0x" + d.getAddress() + "] \"" + val.toString() + "\"");
+                        }
+                    }
+                }
+                w.close();
+
+                // 4: MEMORY MAP
+                w = new PrintWriter(new FileWriter(outDir + "/sections.txt"));
+                w.println("// MEMORY SECTIONS - " + libName + "\n");
+                for (MemoryBlock b : memory.getBlocks()) {
+                    w.println("[" + b.getName() + "]"
+                        + " start=0x" + b.getStart()
+                        + " end=0x" + b.getEnd()
+                        + " size=" + b.getSize()
+                        + " R=" + b.isRead()
+                        + " W=" + b.isWrite()
+                        + " X=" + b.isExecute());
+                }
+                w.close();
+
+                // 5: CALL GRAPH
+                w = new PrintWriter(new FileWriter(outDir + "/call_graph.txt"));
+                w.println("// CALL GRAPH - " + libName + "\n");
+                FunctionIterator fi = fm.getFunctions(true);
+                while (fi.hasNext()) {
+                    Function f = fi.next();
+                    Set<Function> calls = f.getCalledFunctions(monitor);
+                    if (!calls.isEmpty()) {
+                        w.println(f.getName() + " @ 0x" + f.getEntryPoint() + " calls:");
+                        for (Function c : calls) {
+                            w.println("    -> " + c.getName());
+                        }
+                    }
+                }
+                w.close();
+
+                // 6: FUNCTION INDEX
+                w = new PrintWriter(new FileWriter(outDir + "/index.txt"));
+                w.println("// FUNCTION INDEX - " + libName + "\n");
+                fi = fm.getFunctions(true);
+                int idx = 1;
+                while (fi.hasNext()) {
+                    Function f = fi.next();
+                    String flags = f.isThunk() ? "[THUNK]" : "";
+                    flags += f.getName().startsWith("Java_") ? "[JNI]" : "";
+                    flags += f.isInline() ? "[INLINE]" : "";
+                    w.printf("%4d | 0x%-12s | %-14s | %s%n",
+                        idx++, f.getEntryPoint(), flags, f.getName());
+                }
+                w.close();
+
+                // 7: FULL DECOMPILED SOURCE
+                DecompInterface decoIf = new DecompInterface();
+                DecompileOptions opts = new DecompileOptions();
+                opts.setMaxInstructions(99999);
+                opts.setDefaultTimeout(120);
+                decoIf.setOptions(opts);
+                decoIf.openProgram(currentProgram);
+                decoIf.setSimplificationStyle("decompile");
+
+                w = new PrintWriter(new FileWriter(outDir + "/source.c"));
+                w.println("// FULL DECOMPILED SOURCE - " + libName);
+                w.println("// Ghidra 11.0.3 | DeepExtractor\n");
+
+                int total = 0, ok = 0, thunks = 0, failed = 0;
+                fi = fm.getFunctions(true);
+                while (fi.hasNext() && !monitor.isCancelled()) {
+                    Function f = fi.next();
+                    total++;
+                    if (f.isThunk()) {
+                        thunks++;
+                        Function tgt = f.getThunkedFunction(true);
+                        w.println("// [THUNK] " + f.getName() + " -> " + (tgt != null ? tgt.getName() : "unknown") + " @ " + f.getEntryPoint());
+                        w.println("// ==================================================\n");
+                        continue;
+                    }
+                    DecompileResults res = decoIf.decompileFunction(f, 120, monitor);
+                    if (res != null && res.getDecompiledFunction() != null) {
+                        String jniFlag = f.getName().startsWith("Java_") ? " [JNI]" : "";
+                        w.println("// " + f.getName() + jniFlag + " | 0x" + f.getEntryPoint() + " | " + f.getBody().getNumAddresses() + " bytes");
+                        w.println(res.getDecompiledFunction().getC());
+                        w.println("// ==================================================\n");
+                        ok++;
+                    } else {
+                        w.println("// [FAILED] " + f.getName() + " @ " + f.getEntryPoint());
+                        if (res != null && res.getErrorMessage() != null)
+                            w.println("// ERR: " + res.getErrorMessage());
+                        w.println("// ==================================================\n");
+                        failed++;
+                    }
+                }
+                w.println("// DONE - total=" + total + " ok=" + ok + " thunks=" + thunks + " failed=" + failed);
+                w.close();
+                decoIf.dispose();
+                println("DeepExtractor DONE: " + libName);
             }
         }
-        w.close();
-
-        // 6: FUNCTION INDEX
-        w = new PrintWriter(new FileWriter(outDir + "/index.txt"));
-        w.println("// FUNCTION INDEX - " + libName + "\n");
-        fi = fm.getFunctions(true);
-        int idx = 1;
-        while (fi.hasNext()) {
-            Function f = fi.next();
-            String flags = f.isThunk() ? "[THUNK]" : "";
-            flags += f.getName().startsWith("Java_") ? "[JNI]" : "";
-            flags += f.isInline() ? "[INLINE]" : "";
-            w.printf("%4d | 0x%-12s | %-14s | %s%n",
-                idx++, f.getEntryPoint(), flags, f.getName());
-        }
-        w.close();
-
-        // 7: FULL DECOMPILED SOURCE
-        DecompInterface decoIf = new DecompInterface();
-        DecompileOptions opts = new DecompileOptions();
-        opts.setMaxInstructions(99999);
-        opts.setDefaultTimeout(120);
-        decoIf.setOptions(opts);
-        decoIf.openProgram(currentProgram);
-        decoIf.setSimplificationStyle("decompile");
-
-        w = new PrintWriter(new FileWriter(outDir + "/source.c"));
-        w.println("// FULL DECOMPILED SOURCE - " + libName);
-        w.println("// Ghidra 11.0.3 | DeepExtractor\n");
-
-        int total = 0, ok = 0, thunks = 0, failed = 0;
-        fi = fm.getFunctions(true);
-        while (fi.hasNext() && !monitor.isCancelled()) {
-            Function f = fi.next();
-            total++;
-            if (f.isThunk()) {
-                thunks++;
-                Function tgt = f.getThunkedFunction(true);
-                w.println("// [THUNK] " + f.getName() + " -> " + (tgt != null ? tgt.getName() : "unknown") + " @ " + f.getEntryPoint());
-                w.println("// ==================================================\n");
-                continue;
-            }
-            DecompileResults res = decoIf.decompileFunction(f, 120, monitor);
-            if (res != null && res.getDecompiledFunction() != null) {
-                String jniFlag = f.getName().startsWith("Java_") ? " [JNI]" : "";
-                w.println("// " + f.getName() + jniFlag + " | 0x" + f.getEntryPoint() + " | " + f.getBody().getNumAddresses() + " bytes");
-                w.println(res.getDecompiledFunction().getC());
-                w.println("// ==================================================\n");
-                ok++;
-            } else {
-                w.println("// [FAILED] " + f.getName() + " @ " + f.getEntryPoint());
-                if (res != null && res.getErrorMessage() != null)
-                    w.println("// ERR: " + res.getErrorMessage());
-                w.println("// ==================================================\n");
-                failed++;
-            }
-        }
-        w.println("// DONE - total=" + total + " ok=" + ok + " thunks=" + thunks + " failed=" + failed);
-        w.close();
-        decoIf.dispose();
-        println("DeepExtractor DONE: " + libName);
-    }
-}
-JAVAEOF
+        JAVAEOF
         echo "Script written OK"
 
     - name: Deep Decompile All SO Files
       run: |
         mkdir -p App_Source_Code
+        # البحث عن ملفات .so في المستودع بالكامل
         find . -type f -name "*.so" -not -path "*/ghidra/*" | while read -r file; do
           [ -f "$file" ] || continue
 
@@ -237,7 +238,18 @@ JAVAEOF
           echo "Done: $filename -> $outdir"
         done
 
+    - name: Check if outputs exist
+      id: check_files
+      run: |
+        if [ -d "App_Source_Code" ] && [ "$(ls -A App_Source_Code)" ]; then
+          echo "has_artifacts=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_artifacts=false" >> $GITHUB_OUTPUT
+          echo "No .so files found to decompile."
+        fi
+
     - name: Upload All Extracted Data
+      if: steps.check_files.outputs.has_artifacts == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: Deep-Extracted-Source
