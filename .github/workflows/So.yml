@@ -36,8 +36,7 @@ jobs:
     - name: Create Deep Extraction Script
       run: |
         mkdir -p ghidra/Ghidra/Features/Base/ghidra_scripts
-        python3 << 'PYEOF'
-script = r'''
+        cat > ghidra/Ghidra/Features/Base/ghidra_scripts/DeepExtractor.java << 'JAVAEOF'
 import ghidra.app.script.GhidraScript;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileOptions;
@@ -196,11 +195,8 @@ public class DeepExtractor extends GhidraScript {
         println("DeepExtractor DONE: " + libName);
     }
 }
-'''
-with open("ghidra/Ghidra/Features/Base/ghidra_scripts/DeepExtractor.java", "w") as f:
-    f.write(script.strip())
-print("Script written OK")
-PYEOF
+JAVAEOF
+        echo "Script written OK"
 
     - name: Deep Decompile All SO Files
       run: |
