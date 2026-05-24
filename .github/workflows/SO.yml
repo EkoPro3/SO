@@ -1,4 +1,4 @@
-name: Decompile .SO Files
+name: Deep Decompile .SO Files
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    # 3. تحميل وتثبيت أداة Ghidra
+    # 3. تحميل وتثبيت Ghidra
     - name: Download and Install Ghidra
       run: |
         wget -q https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.0.3_build/ghidra_11.0.3_PUBLIC_20240410.zip -O ghidra.zip
@@ -30,81 +30,301 @@ jobs:
         mv ghidra_11.0.3_PUBLIC ghidra
         chmod +x ghidra/support/analyzeHeadless
 
-    # 4. إنشاء سكريبت التفكيك المخصص داخل المجلد الافتراضي لـ Ghidra
-    - name: Create Custom Ghidra Decompiler Script
+    # 4. تثبيت أدوات ELF للاستخراج المباشر
+    - name: Install ELF Analysis Tools
+      run: |
+        sudo apt-get install -y binutils readelf nm file xxd
+
+    # 5. السكريبت الرئيسي الشامل
+    - name: Create Deep Extraction Script
       run: |
         mkdir -p ghidra/Ghidra/Features/Base/ghidra_scripts
-        cat << 'EOF' > ghidra/Ghidra/Features/Base/ghidra_scripts/CustomDecompiler.java
+        cat << 'JAVAEOF' > ghidra/Ghidra/Features/Base/ghidra_scripts/DeepExtractor.java
         import ghidra.app.script.GhidraScript;
         import ghidra.app.decompiler.DecompInterface;
+        import ghidra.app.decompiler.DecompileOptions;
         import ghidra.app.decompiler.DecompileResults;
-        import ghidra.program.model.listing.Function;
-        import ghidra.program.model.listing.FunctionIterator;
-        import java.io.PrintWriter;
-        import java.io.FileWriter;
+        import ghidra.program.model.listing.*;
+        import ghidra.program.model.symbol.*;
+        import ghidra.program.model.data.*;
+        import ghidra.program.model.address.*;
+        import ghidra.program.model.mem.*;
+        import ghidra.util.task.TaskMonitor;
+        import java.io.*;
+        import java.util.*;
 
-        public class CustomDecompiler extends GhidraScript {
+        public class DeepExtractor extends GhidraScript {
+
             @Override
             public void run() throws Exception {
                 String[] args = getScriptArgs();
                 if (args.length == 0) return;
-                String outputFile = args[0];
+                String outDir = args[0];
+                new File(outDir).mkdirs();
 
-                DecompInterface decompInterface = new DecompInterface();
-                decompInterface.openProgram(currentProgram);
+                String libName = currentProgram.getName();
 
-                PrintWriter writer = new PrintWriter(new FileWriter(outputFile));
-                writer.println("// Decompiled using Ghidra Headless Analyzer");
-                writer.println("// Target: " + currentProgram.getName() + "\n");
-
-                FunctionIterator functions = currentProgram.getListing().getFunctions(true);
-                while (functions.hasNext() && !monitor.isCancelled()) {
-                    Function f = functions.next();
-                    if (f.isThunk()) continue;
-                    
-                    DecompileResults results = decompInterface.decompileFunction(f, 30, monitor);
-                    if (results != null && results.getDecompiledFunction() != null) {
-                        writer.println(results.getDecompiledFunction().getC());
-                        writer.println("\n// " + "==================================================" + "\n");
+                // ============================================================
+                // FILE 1: EXPORTS — كل الدوال المُصدَّرة (JNI + public API)
+                // ============================================================
+                PrintWriter exportsWriter = new PrintWriter(new FileWriter(outDir + "/exports.txt"));
+                exportsWriter.println("// EXPORTED SYMBOLS — " + libName);
+                exportsWriter.println("// ============================================================\n");
+                SymbolTable symTable = currentProgram.getSymbolTable();
+                SymbolIterator exportedSymbols = symTable.getExternalEntryPointIterator();
+                // Use defined exported symbols
+                for (Symbol sym : symTable.getAllSymbols(true)) {
+                    if (sym.isExternalEntryPoint()) {
+                        exportsWriter.println("[EXPORT] " + sym.getName() + " @ " + sym.getAddress());
                     }
                 }
-                writer.close();
+                exportsWriter.close();
+
+                // ============================================================
+                // FILE 2: IMPORTS — كل المكتبات الخارجية المستدعاة
+                // ============================================================
+                PrintWriter importsWriter = new PrintWriter(new FileWriter(outDir + "/imports.txt"));
+                importsWriter.println("// IMPORTED SYMBOLS (External Calls) — " + libName);
+                importsWriter.println("// ============================================================\n");
+                ExternalManager extMgr = currentProgram.getExternalManager();
+                for (String libname : extMgr.getExternalLibraryNames()) {
+                    importsWriter.println("[LIB] " + libname);
+                    ExternalLocationIterator extLocs = extMgr.getExternalLocations(libname);
+                    while (extLocs.hasNext()) {
+                        ExternalLocation loc = extLocs.next();
+                        importsWriter.println("    -> " + loc.getLabel() + " @ " + loc.getAddress());
+                    }
+                }
+                importsWriter.close();
+
+                // ============================================================
+                // FILE 3: STRINGS — كل الـ strings في الذاكرة
+                // ============================================================
+                PrintWriter stringsWriter = new PrintWriter(new FileWriter(outDir + "/strings.txt"));
+                stringsWriter.println("// ALL STRINGS IN BINARY — " + libName);
+                stringsWriter.println("// ============================================================\n");
+                Memory memory = currentProgram.getMemory();
+                DataIterator dataIter = currentProgram.getListing().getDefinedData(true);
+                while (dataIter.hasNext()) {
+                    Data data = dataIter.next();
+                    DataType dt = data.getDataType();
+                    if (dt instanceof StringDataType || dt instanceof UnicodeDataType ||
+                        dt instanceof TerminatedStringDataType || dt instanceof TerminatedUnicodeDataType ||
+                        dt.getName().toLowerCase().contains("string")) {
+                        Object val = data.getValue();
+                        if (val != null && val.toString().length() > 2) {
+                            stringsWriter.println("[0x" + data.getAddress() + "] \"" + val.toString() + "\"");
+                        }
+                    }
+                }
+                stringsWriter.close();
+
+                // ============================================================
+                // FILE 4: GLOBALS — كل المتغيرات العامة والبيانات
+                // ============================================================
+                PrintWriter globalsWriter = new PrintWriter(new FileWriter(outDir + "/globals.txt"));
+                globalsWriter.println("// GLOBAL VARIABLES & DATA SECTIONS — " + libName);
+                globalsWriter.println("// ============================================================\n");
+                MemoryBlock[] blocks = memory.getBlocks();
+                for (MemoryBlock block : blocks) {
+                    globalsWriter.println("\n[SECTION] " + block.getName() +
+                        " | Start: 0x" + block.getStart() +
+                        " | End: 0x" + block.getEnd() +
+                        " | Size: " + block.getSize() + " bytes" +
+                        " | R:" + block.isRead() + " W:" + block.isWrite() + " X:" + block.isExecute());
+                }
+                // Named data symbols
+                globalsWriter.println("\n// Named Global Variables:");
+                for (Symbol sym : symTable.getAllSymbols(true)) {
+                    if (sym.getSymbolType() == SymbolType.LABEL &&
+                        !sym.getName().startsWith("DAT_") &&
+                        !sym.getName().startsWith("PTR_") &&
+                        !sym.getName().startsWith("FUN_") &&
+                        !sym.getName().startsWith("LAB_") &&
+                        !sym.getName().startsWith("_") &&
+                        !sym.isExternal()) {
+                        globalsWriter.println("[VAR] " + sym.getName() + " @ 0x" + sym.getAddress());
+                    }
+                }
+                globalsWriter.close();
+
+                // ============================================================
+                // FILE 5: XREFS — مين بيستدعي مين (Call Graph)
+                // ============================================================
+                PrintWriter xrefsWriter = new PrintWriter(new FileWriter(outDir + "/call_graph.txt"));
+                xrefsWriter.println("// FUNCTION CALL GRAPH — " + libName);
+                xrefsWriter.println("// ============================================================\n");
+                FunctionManager fm = currentProgram.getFunctionManager();
+                FunctionIterator allFuncs = fm.getFunctions(true);
+                while (allFuncs.hasNext()) {
+                    Function func = allFuncs.next();
+                    Set<Function> calledFunctions = func.getCalledFunctions(monitor);
+                    if (!calledFunctions.isEmpty()) {
+                        xrefsWriter.println("[" + func.getName() + "] calls:");
+                        for (Function called : calledFunctions) {
+                            xrefsWriter.println("    -> " + called.getName());
+                        }
+                    }
+                }
+                xrefsWriter.close();
+
+                // ============================================================
+                // FILE 6: FULL DECOMPILED SOURCE — كل الدوال مع خيارات محسّنة
+                // ============================================================
+                DecompInterface decompInterface = new DecompInterface();
+
+                // خيارات محسّنة للدقة القصوى
+                DecompileOptions options = new DecompileOptions();
+                options.setMaxInstructions(99999);
+                options.setDefaultTimeout(120);
+                decompInterface.setOptions(options);
+                decompInterface.openProgram(currentProgram);
+                // تفعيل simplification للحصول على كود أوضح
+                decompInterface.setSimplificationStyle("decompile");
+
+                PrintWriter sourceWriter = new PrintWriter(new FileWriter(outDir + "/source.c"));
+                sourceWriter.println("// FULL DECOMPILED SOURCE — " + libName);
+                sourceWriter.println("// Generated by DeepExtractor | Ghidra 11.0.3");
+                sourceWriter.println("// ============================================================\n");
+
+                // عدّاد الدوال
+                int total = 0, success = 0, failed = 0, thunks = 0;
+                FunctionIterator funcs = fm.getFunctions(true);
+                while (funcs.hasNext() && !monitor.isCancelled()) {
+                    Function f = funcs.next();
+                    total++;
+
+                    // تضمين Thunk functions (كانت مُستثناة قبل — مهمة!)
+                    if (f.isThunk()) {
+                        thunks++;
+                        Function thunkTarget = f.getThunkedFunction(true);
+                        sourceWriter.println("// [THUNK] " + f.getName() +
+                            " -> " + (thunkTarget != null ? thunkTarget.getName() : "unknown") +
+                            " @ 0x" + f.getEntryPoint());
+                        sourceWriter.println("// " + "=".repeat(50) + "\n");
+                        continue;
+                    }
+
+                    // محاولة decompile بـ timeout مرتفع
+                    DecompileResults results = decompInterface.decompileFunction(f, 120, monitor);
+
+                    if (results != null && results.getDecompiledFunction() != null) {
+                        String code = results.getDecompiledFunction().getC();
+                        // إضافة التعليقات التلقائية من Ghidra
+                        sourceWriter.println("// FUNC: " + f.getName() +
+                            " | Entry: 0x" + f.getEntryPoint() +
+                            " | Size: " + f.getBody().getNumAddresses() + " bytes");
+
+                        // هل هي JNI function؟
+                        if (f.getName().startsWith("Java_")) {
+                            sourceWriter.println("// [JNI EXPORT]");
+                        }
+                        // هل هي inline أو external؟
+                        if (f.isInline()) sourceWriter.println("// [INLINE]");
+
+                        sourceWriter.println(code);
+                        sourceWriter.println("// " + "=".repeat(50) + "\n");
+                        success++;
+                    } else {
+                        // حتى لو فشل — اكتب العنوان والاسم
+                        sourceWriter.println("// [DECOMPILE_FAILED] " + f.getName() +
+                            " @ 0x" + f.getEntryPoint());
+                        if (results != null && results.getErrorMessage() != null) {
+                            sourceWriter.println("// ERROR: " + results.getErrorMessage());
+                        }
+                        sourceWriter.println("// " + "=".repeat(50) + "\n");
+                        failed++;
+                    }
+                }
+                sourceWriter.println("\n// ============================================================");
+                sourceWriter.println("// SUMMARY: Total=" + total + " | Decompiled=" + success +
+                    " | Thunks=" + thunks + " | Failed=" + failed);
+                sourceWriter.close();
                 decompInterface.dispose();
+
+                // ============================================================
+                // FILE 7: INDEX — فهرس شامل لكل الدوال
+                // ============================================================
+                PrintWriter indexWriter = new PrintWriter(new FileWriter(outDir + "/index.txt"));
+                indexWriter.println("// FUNCTION INDEX — " + libName);
+                indexWriter.println("// ============================================================\n");
+                FunctionIterator allF = fm.getFunctions(true);
+                int idx = 1;
+                while (allF.hasNext()) {
+                    Function f = allF.next();
+                    String flags = "";
+                    if (f.isThunk()) flags += "[THUNK]";
+                    if (f.isInline()) flags += "[INLINE]";
+                    if (f.getName().startsWith("Java_")) flags += "[JNI]";
+                    if (f.isExternal()) flags += "[EXTERNAL]";
+                    indexWriter.printf("%4d | 0x%-12s | %-8s | %s%n",
+                        idx++, f.getEntryPoint(), flags, f.getName());
+                }
+                indexWriter.close();
+
+                println("DeepExtractor DONE for: " + libName);
             }
         }
-        EOF
+        JAVAEOF
 
-    # 5. تشغيل التفكيك المنظم
-    - name: Decompile All .SO Files
+    # 6. تشغيل التفكيك العميق على كل ملفات .so
+    - name: Deep Decompile All .SO Files
       run: |
         mkdir -p App_Source_Code
-        
-        # تفعيل خاصية عدم الفشل إذا لم يتطابق النمط (في حال لم تكن هناك ملفات .so)
         shopt -s nullglob
-        
-        for file in *.so; do
-          if [ -f "$file" ]; then
-            filename=$(basename -- "$file")
-            filename_no_ext="${filename%.*}"
-            
-            echo "========================================="
-            echo "Processing and Decompiling: $filename"
-            echo "========================================="
-            
-            mkdir -p "App_Source_Code/$filename_no_ext"
-            
-            # تشغيل الأداة مع تمرير مسار السكريبت المخصص بدقة عبر سطر الأوامر لضمان التقاطه
-            ./ghidra/support/analyzeHeadless . Temporary_Project \
-              -import "$file" \
-              -scriptPath ./ghidra/Ghidra/Features/Base/ghidra_scripts \
-              -postScript CustomDecompiler.java "App_Source_Code/$filename_no_ext/${filename_no_ext}.c" \
-              -deleteProject
+
+        for file in *.so app/src/main/jniLibs/**/*.so app/src/lib/**/*.so; do
+          if [ ! -f "$file" ]; then continue; fi
+
+          filename=$(basename -- "$file")
+          filename_no_ext="${filename%.*}"
+          arch_dir=$(basename $(dirname "$file"))
+
+          # تنظيم المخرجات حسب المعمارية
+          if [[ "$arch_dir" == *"arm64"* || "$arch_dir" == *"x86"* || "$arch_dir" == *"armeabi"* ]]; then
+            outdir="App_Source_Code/${filename_no_ext}/${arch_dir}"
+          else
+            outdir="App_Source_Code/${filename_no_ext}"
           fi
+          mkdir -p "$outdir"
+
+          echo "========================================="
+          echo "Processing: $filename ($arch_dir)"
+          echo "========================================="
+
+          # استخراج فوري بـ binutils (سريع + دقيق للـ symbols)
+          echo "--- readelf symbols ---"
+          readelf -Ws "$file" > "$outdir/readelf_symbols.txt" 2>/dev/null || true
+          echo "--- readelf sections ---"
+          readelf -S "$file" > "$outdir/readelf_sections.txt" 2>/dev/null || true
+          echo "--- readelf dynamic ---"
+          readelf -d "$file" > "$outdir/readelf_dynamic.txt" 2>/dev/null || true
+          echo "--- nm symbols ---"
+          nm -D --defined-only "$file" > "$outdir/nm_exports.txt" 2>/dev/null || true
+          nm -D --undefined-only "$file" > "$outdir/nm_imports.txt" 2>/dev/null || true
+          echo "--- strings extraction ---"
+          strings -n 5 "$file" > "$outdir/strings_raw.txt" 2>/dev/null || true
+          echo "--- file info ---"
+          file "$file" > "$outdir/file_info.txt" 2>/dev/null || true
+
+          # Ghidra deep decompile
+          echo "--- Ghidra deep decompile ---"
+          ./ghidra/support/analyzeHeadless . "Proj_${filename_no_ext}" \
+            -import "$file" \
+            -analysisTimeoutPerFile 600 \
+            -scriptPath ./ghidra/Ghidra/Features/Base/ghidra_scripts \
+            -postScript DeepExtractor.java "$outdir" \
+            -deleteProject \
+            -log "$outdir/ghidra_log.txt" \
+            2>&1 | tail -20 || true
+
+          echo "Done: $filename -> $outdir"
         done
 
-    # 6. رفع المخرجات كملف واحد منظم
-    - name: Upload Decompiled Source
+    # 7. رفع كل المخرجات
+    - name: Upload All Extracted Data
       uses: actions/upload-artifact@v4
       with:
-        name: App-All-Decompiled-Source
+        name: Deep-Extracted-Source
         path: App_Source_Code/
+        retention-days: 30
